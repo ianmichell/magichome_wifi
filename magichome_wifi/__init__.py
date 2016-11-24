@@ -41,11 +41,12 @@ class MagicHomeLEDController:
         self._ip = ip
         self._port = port
         self._is_on = False
-        self._rgb = []
+        self._rgb = [0, 0, 0]
         self._warm_white = 0
         self._cold_white = 0
         self._mode = None
         self._brightness = 0
+        self._socket = None
 
     @staticmethod
     def scan(timeout=10):
@@ -102,42 +103,58 @@ class MagicHomeLEDController:
     def cold_white(self):
         return self._cold_white
 
-    def connect(self):
-        try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(10)
-            self.socket.connect((self._ip, self._port))
+    @property
+    def brightness(self):
+        return self._brightness
+
+    def connect(self, update_state=True):
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._socket.settimeout(3)
+        self._socket.connect((self._ip, self._port))
+        if update_state:
             self.update_state()
-        except socket.error:
-            pass
 
     def close(self):
         try:
-            self.socket.close()
+            self._socket.close()
         except socket.error:
             pass
 
-    def update_state(self):
+    def update_state(self, retry=True):
         try:
             self._send_msg(bytearray([0x81, 0x8A, 0x8B, 0x96]), False)
-            state = self._read_msg(15)
-            print(state)
+            state = self._read_msg(256)
+            if state is None and retry:
+                self.update_state(False)
+                return
+            elif state is None:
+                return
+            # Reading and updating variables requires a lock
+            with self._lock:
+                if len(state) < 14:
+                    self.update_state(False)
+                    return
+                # self._mode = self._get_mode(state)
+                if state[2] == 0x23:
+                    self._is_on = True
+                elif state[2] == 0x24:
+                    self._is_on = False
+                self._rgb = [state[6], state[7], state[8]]
+                self._warm_white = state[9]
+                self._cold_white = state[10]
+                self._brightness = self._calculate_brightness(self._rgb)
         except socket.error:
-            self._is_on = False
-            pass
-        # Reading and updating variables requires a lock
-        with self._lock:
-            # self._mode = self._get_mode(state)
-            if state[2] == 0x23:
-                self._is_on = True
-            else:
+            if retry:
+                self.close()
+                self.connect(False)
+                self.update_state(False)
+                return
+            elif not retry:
                 self._is_on = False
-            self._rgb = [state[6], state[7], state[8]]
-            self._warm_white = state[9]
-            self._cold_white = state[10]
-            self._brightness = self._calculate_brightness(self._rgb)
+            pass
 
     def set_rgb(self, rgb, ww=0, cw=0, brightness=None):
+        rgb = list(map(int, rgb))
         # Ensure that the RGB array is of len 3
         if len(rgb) < 3:
             raise Exception("You need to specific at least three values for RGB")
@@ -150,7 +167,7 @@ class MagicHomeLEDController:
         if cw < 1 and ww < 1:
             if brightness is not None:
                 rgb = self._calculate_brightness(rgb, 0, 0, brightness)
-            msg.extend(rgb)
+            msg.extend(list(map(int, rgb)))
             msg.extend([0, 0])
         elif cw > 0:
             msg.extend([0, 0, 0, 0, cw])
@@ -174,10 +191,12 @@ class MagicHomeLEDController:
 
     def turn_on(self):
         self._send_msg(bytearray([0x71, 0x23, 0x0f]))
+        self._is_on = True
         return
 
     def turn_off(self):
         self._send_msg(bytearray([0x71, 0x24, 0x0f]))
+        self._is_on = False
         return
 
     def _get_mode(self, data):
@@ -200,24 +219,30 @@ class MagicHomeLEDController:
         return colorsys.hsv_to_rgb(hsv[0], hsv[1], hsv[2])
 
     def _send_msg(self, data, calculate_checksum=True):
-        try:
-            if calculate_checksum:
-                csum = sum(data) & 0xFF
+        if calculate_checksum:
+            csum = sum(data) & 0xFF
             data.append(csum)
-            with self._lock:
-                self.socket.send(data)
-        except:
-            pass
+        with self._lock:
+            self._socket.send(data)
 
     def _read_msg(self, expected):
         remaining = expected
-        bytes = bytearray()
-        with self._lock:
-            while remaining > 0:
+        data = bytearray()
+        begin = time.time()
+        # Give a maximum of 3 seconds
+        while remaining > 0:
+            if time.time() - begin > 1:
+                break
+            with self._lock:
                 try:
-                    chunk = self.socket.recv(remaining)
+                    self._socket.setblocking(0)
+                    chunk = self._socket.recv(remaining)
+                    if chunk:
+                        begin = time.time()
                     remaining -= len(chunk)
-                    bytes.extend(chunk)
-                    return bytes
-                except socket.error:
+                    data.extend(chunk)
+                except socket.error as ex:
                     pass
+                finally:
+                    self._socket.setblocking(1)
+        return data
