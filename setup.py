@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='magichome_wifi',
-    version='0.1',
+    version='0.1.1',
     packages=['magichome_wifi'],
     url='https://github.com/thunderbird/magichome_wifi',
     license='APACHE 2.0',

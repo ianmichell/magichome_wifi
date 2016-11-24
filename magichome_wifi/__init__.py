@@ -130,19 +130,18 @@ class MagicHomeLEDController:
             elif state is None:
                 return
             # Reading and updating variables requires a lock
-            with self._lock:
-                if len(state) < 14:
-                    self.update_state(False)
-                    return
-                # self._mode = self._get_mode(state)
-                if state[2] == 0x23:
-                    self._is_on = True
-                elif state[2] == 0x24:
-                    self._is_on = False
-                self._rgb = [state[6], state[7], state[8]]
-                self._warm_white = state[9]
-                self._cold_white = state[10]
-                self._brightness = self._calculate_brightness(self._rgb)
+            if len(state) < 14:
+                self.update_state(False)
+                return
+            # self._mode = self._get_mode(state)
+            if state[2] == 0x23:
+                self._is_on = True
+            elif state[2] == 0x24:
+                self._is_on = False
+            self._rgb = [state[6], state[7], state[8]]
+            self._warm_white = state[9]
+            self._cold_white = state[10]
+            self._brightness = self._calculate_brightness(self._rgb)
         except socket.error:
             if retry:
                 self.close()
